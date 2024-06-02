@@ -35,6 +35,10 @@ type ProxyList struct {
 	handlerList *HandlerList
 }
 
+func (pl *ProxyList) Use(middleware func(next HandlerFunc) HandlerFunc) {
+	pl.handlerList.Use(middleware)
+}
+
 func (pl *ProxyList) OnChanged(fn func(map[string]*Service)) {
 	pl.handlerList.OnChanged(fn)
 }

@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -28,6 +29,8 @@ type Service struct {
 	Paths []ServicePath `json:"paths,omitempty"`
 }
 
+type HandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request)
+
 type HandlerList struct {
 	// router *httprouter.Router
 	router atomic.Uintptr
@@ -37,14 +40,20 @@ type HandlerList struct {
 	onChange func(map[string]*Service)
 
 	initRouter func(router *httprouter.Router)
+
+	middlewares []func(next HandlerFunc) HandlerFunc
 }
 
-func (pl *HandlerList) setRouter(router *httprouter.Router) {
-	pl.router.Store(uintptr(unsafe.Pointer(router)))
+func (hl *HandlerList) Use(middleware func(next HandlerFunc) HandlerFunc) {
+	hl.middlewares = append(hl.middlewares, middleware)
 }
 
-func (pl *HandlerList) getRouter() *httprouter.Router {
-	o := pl.router.Load()
+func (hl *HandlerList) setRouter(router *httprouter.Router) {
+	hl.router.Store(uintptr(unsafe.Pointer(router)))
+}
+
+func (hl *HandlerList) getRouter() *httprouter.Router {
+	o := hl.router.Load()
 	if o == 0 {
 		return nil
 	}
@@ -147,17 +156,26 @@ func (hl *HandlerList) rebuildWithoutLocked() {
 			panic(err)
 		}
 
-		proxyhandler := httputil.NewSingleHostReverseProxy(target)
+		var handler = httputil.NewSingleHostReverseProxy(target)
+		var handlerFunc = func(ctx context.Context, w http.ResponseWriter, r *http.Request) {
+			handler.ServeHTTP(w, r)
+		}
 
 		for _, pa := range svc.Paths {
 			if pa.TrimPrefix {
 				router.Handle(urljoin(pa.Path, "/*filepath"), func(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
 					r.URL.Path = params.ByName("filepath")
-					proxyhandler.ServeHTTP(w, r)
+					for _, middleware := range hl.middlewares {
+						handlerFunc = middleware(handlerFunc)
+					}
+					handlerFunc(r.Context(), w, r)
 				})
 			} else {
 				router.Handle(urljoin(pa.Path, "/*filepath"), func(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
-					proxyhandler.ServeHTTP(w, r)
+					for _, middleware := range hl.middlewares {
+						handlerFunc = middleware(handlerFunc)
+					}
+					handlerFunc(r.Context(), w, r)
 				})
 			}
 		}
