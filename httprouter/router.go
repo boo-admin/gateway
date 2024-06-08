@@ -81,70 +81,35 @@
 package httprouter
 
 import (
-	"context"
 	"net/http"
 
 	// "strings"
 	"sync"
 )
 
-// Handle is a function that can be registered to a route to handle HTTP
-// requests. Like http.HandlerFunc, but has a third parameter for the values of
-// wildcards (path variables).
-type Handle func(http.ResponseWriter, *http.Request, Params)
-
-// Param is a single URL parameter, consisting of a key and a value.
-type Param struct {
-	Key   string
-	Value string
-}
-
-// Params is a Param-slice, as returned by the router.
-// The slice is ordered, the first URL parameter is also the first slice value.
-// It is therefore safe to read values by the index.
-type Params []Param
-
-// ByName returns the value of the first Param which key matches the given name.
-// If no matching Param is found, an empty string is returned.
-func (ps Params) ByName(name string) string {
-	for _, p := range ps {
-		if p.Key == name {
-			return p.Value
-		}
-	}
-	return ""
-}
-
-type paramsKey struct{}
-
-// ParamsKey is the request context key under which URL params are stored.
-var ParamsKey = paramsKey{}
-
-// ParamsFromContext pulls the URL parameters from a request context,
-// or returns nil if none are present.
-func ParamsFromContext(ctx context.Context) Params {
-	p, _ := ctx.Value(ParamsKey).(Params)
-	return p
-}
-
 // MatchedRoutePathParam is the Param name under which the path of the matched
 // route is stored, if Router.SaveMatchedRoutePath is set.
 var MatchedRoutePathParam = "$matchedRoutePath"
-
-// MatchedRoutePath retrieves the path of the matched route.
-// Router.SaveMatchedRoutePath must have been enabled when the respective
-// handler was added, otherwise this function always returns an empty string.
-func (ps Params) MatchedRoutePath() string {
-	return ps.ByName(MatchedRoutePathParam)
-}
 
 // Router is a http.Handler which can be used to dispatch requests to different
 // handler functions via configurable routes
 type Router struct {
 	trees *node
 
-	paramsPool sync.Pool
-	maxParams  uint16
+	ctxPool   sync.Pool
+	maxParams uint16
+
+	// UseRawPath if enabled, the url.RawPath will be used to find parameters.
+	UseRawPath bool
+
+	// UnescapePathValues if true, the path value will be unescaped.
+	// If UseRawPath is false (by default), the UnescapePathValues effectively is true,
+	// as url.Path gonna be used, which is already unescaped.
+	UnescapePathValues bool
+
+	// RemoveExtraSlash a parameter can be parsed from the URL even with extra slashes.
+	// See the PR #1817 and issue #1644
+	RemoveExtraSlash bool
 
 	// If enabled, adds the matched route path onto the http.Request context
 	// before invoking the handler.
@@ -188,36 +153,40 @@ var _ http.Handler = New()
 // New returns a new initialized Router.
 // Path auto-correction, including trailing slashes, is enabled by default.
 func New() *Router {
-	return &Router{
+	r := &Router{
 		RedirectTrailingSlash: true,
 		RedirectFixedPath:     true,
 	}
+
+	r.ctxPool.New = func() interface{} {
+		ctx := &Context{}
+		ctx.skippedNodes = make([]skippedNode, 0, r.maxParams)
+		ctx.Params = make(Params, 0, r.maxParams)
+		return ctx
+	}
+	return r
 }
 
-func (r *Router) getParams() *Params {
-	ps, _ := r.paramsPool.Get().(*Params)
-	*ps = (*ps)[0:0] // reset slice
-	return ps
+func (r *Router) getCtx() *Context {
+	ctx, _ := r.ctxPool.Get().(*Context)
+	ctx.Params = ctx.Params[0:0]             // reset slice
+	ctx.skippedNodes = ctx.skippedNodes[0:0] // reset slice
+	return ctx
 }
 
-func (r *Router) putParams(ps *Params) {
-	if ps != nil {
-		r.paramsPool.Put(ps)
+func (r *Router) putCtx(ctx *Context) {
+	if ctx != nil {
+		ctx.StdCtx = nil
+		ctx.Request = nil
+		ctx.ResponseWriter = nil
+		r.ctxPool.Put(ctx)
 	}
 }
 
-func (r *Router) saveMatchedRoutePath(path string, handle Handle) Handle {
-	return func(w http.ResponseWriter, req *http.Request, ps Params) {
-		if ps == nil {
-			psp := r.getParams()
-			ps = (*psp)[0:1]
-			ps[0] = Param{Key: MatchedRoutePathParam, Value: path}
-			handle(w, req, ps)
-			r.putParams(psp)
-		} else {
-			ps = append(ps, Param{Key: MatchedRoutePathParam, Value: path})
-			handle(w, req, ps)
-		}
+func (r *Router) saveMatchedRoutePath(path string, handle HandleFunc) HandleFunc {
+	return func(ctx *Context) {
+		ctx.Params = append(ctx.Params, Param{Key: MatchedRoutePathParam, Value: path})
+		handle(ctx)
 	}
 }
 
@@ -264,7 +233,7 @@ func (r *Router) saveMatchedRoutePath(path string, handle Handle) Handle {
 // This function is intended for bulk loading and to allow the usage of less
 // frequently used, non-standardized or custom methods (e.g. for internal
 // communication with a proxy).
-func (r *Router) Handle(path string, handle Handle) {
+func (r *Router) Handle(path string, handle HandleFunc) {
 	varsCount := uint16(0)
 
 	// if method == "" {
@@ -298,36 +267,6 @@ func (r *Router) Handle(path string, handle Handle) {
 	if paramsCount := countParams(path); paramsCount+varsCount > r.maxParams {
 		r.maxParams = paramsCount + varsCount
 	}
-
-	// Lazy-init paramsPool alloc func
-	if r.paramsPool.New == nil && r.maxParams > 0 {
-		r.paramsPool.New = func() interface{} {
-			ps := make(Params, 0, r.maxParams)
-			return &ps
-		}
-	}
-}
-
-// Handler is an adapter which allows the usage of an http.Handler as a
-// request handle.
-// The Params are available in the request context under ParamsKey.
-func (r *Router) Handler(path string, handler http.Handler) {
-	r.Handle(path,
-		func(w http.ResponseWriter, req *http.Request, p Params) {
-			if len(p) > 0 {
-				ctx := req.Context()
-				ctx = context.WithValue(ctx, ParamsKey, p)
-				req = req.WithContext(ctx)
-			}
-			handler.ServeHTTP(w, req)
-		},
-	)
-}
-
-// HandlerFunc is an adapter which allows the usage of an http.HandlerFunc as a
-// request handle.
-func (r *Router) HandlerFunc(path string, handler http.HandlerFunc) {
-	r.Handler(path, handler)
 }
 
 // ServeFiles serves files from the given file system root.
@@ -348,9 +287,9 @@ func (r *Router) ServeFiles(path string, root http.FileSystem) {
 
 	fileServer := http.FileServer(root)
 
-	r.Handle(path, func(w http.ResponseWriter, req *http.Request, ps Params) {
-		req.URL.Path = ps.ByName("filepath")
-		fileServer.ServeHTTP(w, req)
+	r.Handle(path, func(ctx *Context) {
+		ctx.Request.URL.Path = ctx.Params.ByName("filepath")
+		fileServer.ServeHTTP(ctx.ResponseWriter, ctx.Request)
 	})
 }
 
@@ -365,17 +304,19 @@ func (r *Router) recv(w http.ResponseWriter, req *http.Request) {
 // If the path was found, it returns the handle function and the path parameter
 // values. Otherwise the third return value indicates whether a redirection to
 // the same path with an extra / without the trailing slash should be performed.
-func (r *Router) Lookup(path string) (Handle, Params, bool) {
+func (r *Router) Lookup(path string) (HandleFunc, Params, bool) {
 	if root := r.trees; root != nil {
-		handle, ps, tsr := root.getValue(path, r.getParams)
-		if handle == nil {
-			r.putParams(ps)
-			return nil, nil, tsr
+		ctx := r.getCtx()
+
+		value := root.getValue(path, &ctx.Params, &ctx.skippedNodes, false)
+		if value.handle == nil {
+			r.putCtx(ctx)
+			return nil, nil, value.tsr
 		}
-		if ps == nil {
-			return handle, nil, tsr
+		if len(ctx.Params) == 0 {
+			return value.handle, nil, value.tsr
 		}
-		return handle, *ps, tsr
+		return value.handle, ctx.Params, value.tsr
 	}
 	return nil, nil, false
 }
@@ -386,18 +327,28 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		defer r.recv(w, req)
 	}
 
-	path := req.URL.Path
+	rPath := req.URL.Path
+	unescape := false
+	if r.UseRawPath && len(req.URL.RawPath) > 0 {
+		rPath = req.URL.RawPath
+		unescape = r.UnescapePathValues
+	}
+
+	if r.RemoveExtraSlash {
+		rPath = CleanPath(rPath)
+	}
 
 	if root := r.trees; root != nil {
-		if handle, ps, tsr := root.getValue(path, r.getParams); handle != nil {
-			if ps != nil {
-				handle(w, req, *ps)
-				r.putParams(ps)
-			} else {
-				handle(w, req, nil)
-			}
+
+		ctx := r.getCtx()
+		ctx.ResponseWriter = w
+		ctx.Request = req
+
+		if value := root.getValue(rPath, &ctx.Params, &ctx.skippedNodes, unescape); value.handle != nil {
+			value.handle(ctx)
+			r.putCtx(ctx)
 			return
-		} else if req.Method != http.MethodConnect && path != "/" {
+		} else if req.Method != http.MethodConnect && rPath != "/" {
 			// Moved Permanently, request with GET method
 			code := http.StatusMovedPermanently
 			if req.Method != http.MethodGet {
@@ -405,11 +356,11 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				code = http.StatusPermanentRedirect
 			}
 
-			if tsr && r.RedirectTrailingSlash {
-				if len(path) > 1 && path[len(path)-1] == '/' {
-					req.URL.Path = path[:len(path)-1]
+			if value.tsr && r.RedirectTrailingSlash {
+				if len(rPath) > 1 && rPath[len(rPath)-1] == '/' {
+					req.URL.Path = rPath[:len(rPath)-1]
 				} else {
-					req.URL.Path = path + "/"
+					req.URL.Path = rPath + "/"
 				}
 				http.Redirect(w, req, req.URL.String(), code)
 				return
@@ -418,11 +369,11 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			// Try to fix the request path
 			if r.RedirectFixedPath {
 				fixedPath, found := root.findCaseInsensitivePath(
-					CleanPath(path),
+					CleanPath(rPath),
 					r.RedirectTrailingSlash,
 				)
 				if found {
-					req.URL.Path = fixedPath
+					req.URL.Path = string(fixedPath)
 					http.Redirect(w, req, req.URL.String(), code)
 					return
 				}
