@@ -48,40 +48,40 @@ func (pl *ProxyList) Set(svcList map[string]*Service) {
 }
 
 func (pl *ProxyList) init(router *httprouter.Router) {
-	router.Handle("/proxylist", func(w http.ResponseWriter, req *http.Request, params httprouter.Params) {
-		switch req.Method {
+	router.Handle("/proxylist", func(ctx *Context) {
+		switch ctx.Request.Method {
 		case http.MethodGet:
-			pl.list(req.Context(), w, req)
+			pl.list(ctx.StdCtx, ctx.ResponseWriter, ctx.Request)
 			return
 			// case http.MethodPost:
-			// 	pl.attach(req.Context(), w, req)
+			// 	pl.attach(ctx.Request.Context(), w, ctx.Request)
 			// 	return
 		}
 
-		http.Error(w,
+		http.Error(ctx.ResponseWriter,
 			http.StatusText(http.StatusMethodNotAllowed),
 			http.StatusMethodNotAllowed,
 		)
 	})
-	router.Handle("/proxylist/:uuid", func(w http.ResponseWriter, req *http.Request, params httprouter.Params) {
-		uuid := params.ByName("uuid")
+	router.Handle("/proxylist/:uuid", func(ctx *Context) {
+		uuid := ctx.Params.ByName("uuid")
 
-		switch req.Method {
+		switch ctx.Request.Method {
 		// case http.MethodGet:
-		// 	pl.list(req.Context(), w, req)
+		// 	pl.list(ctx.StdCtx, ctx.ResponseWriter, ctx.Request)
 		// 	return
 		case http.MethodPost:
-			pl.attach(req.Context(), uuid, w, req)
+			pl.attach(ctx.StdCtx, uuid, ctx.ResponseWriter, ctx.Request)
 			return
 		case http.MethodPut:
-			pl.attach(req.Context(), uuid, w, req)
+			pl.attach(ctx.StdCtx, uuid, ctx.ResponseWriter, ctx.Request)
 			return
 		case http.MethodDelete:
-			pl.detach(req.Context(), uuid, w, req)
+			pl.detach(ctx.StdCtx, uuid, ctx.ResponseWriter, ctx.Request)
 			return
 		}
 
-		http.Error(w,
+		http.Error(ctx.ResponseWriter,
 			http.StatusText(http.StatusMethodNotAllowed),
 			http.StatusMethodNotAllowed,
 		)

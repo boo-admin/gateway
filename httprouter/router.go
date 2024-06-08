@@ -341,6 +341,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if root := r.trees; root != nil {
 
 		ctx := r.getCtx()
+		ctx.StdCtx = req.Context()
 		ctx.ResponseWriter = w
 		ctx.Request = req
 

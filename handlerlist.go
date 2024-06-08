@@ -1,8 +1,6 @@
 package gateway
 
 import (
-	"context"
-	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"sync"
@@ -29,7 +27,8 @@ type Service struct {
 	Paths []ServicePath `json:"paths,omitempty"`
 }
 
-type HandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request)
+type Context = httprouter.Context
+type HandlerFunc = httprouter.HandleFunc
 
 type HandlerList struct {
 	// router *httprouter.Router
@@ -157,25 +156,25 @@ func (hl *HandlerList) rebuildWithoutLocked() {
 		}
 
 		var handler = httputil.NewSingleHostReverseProxy(target)
-		var handlerFunc = func(ctx context.Context, w http.ResponseWriter, r *http.Request) {
-			handler.ServeHTTP(w, r)
+		var handlerFunc = func(ctx *Context) {
+			handler.ServeHTTP(ctx.ResponseWriter, ctx.Request)
 		}
 
 		for _, pa := range svc.Paths {
 			if pa.TrimPrefix {
-				router.Handle(urljoin(pa.Path, "/*filepath"), func(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
-					r.URL.Path = params.ByName("filepath")
+				router.Handle(urljoin(pa.Path, "/*filepath"), func(ctx *Context) {
+					ctx.Request.URL.Path = ctx.Params.ByName("filepath")
 					for _, middleware := range hl.middlewares {
 						handlerFunc = middleware(handlerFunc)
 					}
-					handlerFunc(r.Context(), w, r)
+					handlerFunc(ctx)
 				})
 			} else {
-				router.Handle(urljoin(pa.Path, "/*filepath"), func(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
+				router.Handle(urljoin(pa.Path, "/*filepath"), func(ctx *Context) {
 					for _, middleware := range hl.middlewares {
 						handlerFunc = middleware(handlerFunc)
 					}
-					handlerFunc(r.Context(), w, r)
+					handlerFunc(ctx)
 				})
 			}
 		}
