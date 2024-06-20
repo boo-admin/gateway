@@ -7,7 +7,7 @@ import (
 	"io/ioutil"
 	"os"
 
-	"github.com/boo-admin/gateway/httpext"
+	"github.com/boo-admin/boo/goutils/httpext"
 	"golang.org/x/exp/slog"
 )
 
