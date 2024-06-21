@@ -10,23 +10,11 @@ import (
 	"unsafe"
 
 	"github.com/boo-admin/gateway/httprouter"
+	"github.com/boo-admin/boo/client/registry"
 )
 
-type ServicePath struct {
-	Path       string `json:"path,omitempty"`
-	TrimPrefix bool   `json:"trim_prefix,omitempty"`
-}
-
-type Service struct {
-	UUID      string `json:"uuid,omitempty"`
-	BaseURL   string `json:"url,omitempty"`
-	Heartbeat bool   `json:"heartbeat,omitempty"`
-
-	CreatedAt   time.Time `json:"created_at,omitempty"`
-	HeartbeatAt time.Time `json:"heartbeat_at,omitempty"`
-
-	Paths []ServicePath `json:"paths,omitempty"`
-}
+type ServicePath = registry.ServicePath
+type Service = registry.Service
 
 type Context = httprouter.Context
 type HandlerFunc = httprouter.HandleFunc
@@ -35,6 +23,8 @@ type HandlerList struct {
 	// router *httprouter.Router
 	router atomic.Uintptr
 
+	skiper SkipPathList
+
 	lock     sync.Mutex
 	services map[string]*Service
 	onChange func(map[string]*Service)
@@ -42,6 +32,10 @@ type HandlerList struct {
 	initRouter func(router *httprouter.Router)
 
 	middlewares []func(next HandlerFunc) HandlerFunc
+}
+
+func (hl *HandlerList) GetAuthSkipPathList() *SkipPathList {
+	return &hl.skiper
 }
 
 func (hl *HandlerList) Use(middleware func(next HandlerFunc) HandlerFunc) {
@@ -150,6 +144,8 @@ func (hl *HandlerList) rebuildWithoutLocked() {
 	var router = httprouter.New()
 	hl.initRouter(router)
 
+
+	var skipData SkipData
 	for _, svc := range hl.services {
 		target, err := url.Parse(svc.BaseURL)
 		if err != nil {
@@ -157,8 +153,20 @@ func (hl *HandlerList) rebuildWithoutLocked() {
 		}
 
 		var handler = httputil.NewSingleHostReverseProxy(target)
+		// handler.Rewrite = func(r *ProxyRequest) {
+		// 	r.Out.Host = r.In.Host // if desired
+		// }
+
 		var handlerFunc = func(ctx *Context) {
 			handler.ServeHTTP(ctx.ResponseWriter, ctx.Request)
+		}
+
+		for _, pa := range svc.SkipLoginPaths {
+			if strings.HasSuffix(pa, "*") {
+				skipData.SkipPrefixList = append(skipData.SkipPrefixList, strings.TrimSuffix(pa, "*"))
+			} else {
+				skipData.SkipList = append(skipData.SkipList, pa)
+			}
 		}
 
 		for _, pa := range svc.Paths {
@@ -181,6 +189,7 @@ func (hl *HandlerList) rebuildWithoutLocked() {
 		}
 	}
 
+	hl.skiper.Set(&skipData)
 	hl.setRouter(router)
 }
 

@@ -32,6 +32,10 @@ type ProxyList struct {
 	handlerList *HandlerList
 }
 
+func (pl *ProxyList) GetAuthSkipPathList() *SkipPathList {
+	return pl.handlerList.GetAuthSkipPathList()
+}
+
 func (pl *ProxyList) Use(middleware func(next HandlerFunc) HandlerFunc) {
 	pl.handlerList.Use(middleware)
 }
