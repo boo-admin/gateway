@@ -1,3 +1,3 @@
 module github.com/boo-admin/gateway/httprouter
 
-go 1.7
+go 1.21.3

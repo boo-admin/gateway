@@ -3,6 +3,7 @@ package gateway
 import (
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -181,4 +182,17 @@ func (hl *HandlerList) rebuildWithoutLocked() {
 	}
 
 	hl.setRouter(router)
+}
+
+func urljoin(a, b string) string {
+	if strings.HasSuffix(a, "/") {
+		if strings.HasPrefix(b, "/") {
+			return a + b[1:]
+		}
+		return a + b
+	}
+	if strings.HasPrefix(b, "/") {
+		return a + b
+	}
+	return a + "/" + b
 }
