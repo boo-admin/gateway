@@ -9,8 +9,8 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/boo-admin/gateway/httprouter"
 	"github.com/boo-admin/boo/client/registry"
+	"github.com/boo-admin/gateway/httprouter"
 )
 
 type ServicePath = registry.ServicePath
@@ -143,7 +143,6 @@ func (hl *HandlerList) OnChanged(fn func(map[string]*Service)) {
 func (hl *HandlerList) rebuildWithoutLocked() {
 	var router = httprouter.New()
 	hl.initRouter(router)
-
 
 	var skipData SkipData
 	for _, svc := range hl.services {
